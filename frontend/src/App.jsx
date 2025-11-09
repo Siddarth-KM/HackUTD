@@ -6,14 +6,14 @@ const Tooltip = ({ text, position = 'right' }) => {
   const [show, setShow] = useState(false);
   
   const positionClasses = {
-    right: '-right-2 top-6',
-    left: '-left-2 top-6',
+    right: 'left-6 top-0',  // Opens to the right of the icon
+    left: 'right-6 top-0',   // Opens to the left of the icon (on screen left side)
     top: 'bottom-6 left-1/2 -translate-x-1/2',
   };
   
   const arrowClasses = {
-    right: '-top-2 right-3 w-3 h-3 bg-gray-900 transform rotate-45',
-    left: '-top-2 left-3 w-3 h-3 bg-gray-900 transform rotate-45',
+    right: 'top-2 -left-1.5 w-3 h-3 bg-gray-900 transform rotate-45',  // Arrow points left
+    left: 'top-2 -right-1.5 w-3 h-3 bg-gray-900 transform rotate-45',   // Arrow points right
     top: '-bottom-2 left-1/2 -translate-x-1/2 w-3 h-3 bg-gray-900 transform rotate-45',
   };
   
@@ -132,6 +132,13 @@ const OptionsAnalyzer = () => {
     "timestamp": "2025-11-08T21:32:34.167476"
   };
 
+  // Handle input changes and clear results
+  const handleInputChange = (field, value) => {
+    setFormData({...formData, [field]: value});
+    setAnalysis(null); // Clear previous results
+    setError(null); // Clear any errors
+  };
+
   const handleAnalyze = async () => {
     setLoading(true);
     setError(null);
@@ -167,12 +174,19 @@ const OptionsAnalyzer = () => {
     
     const currentPrice = analysis.market.current_price;
     const predictedPrice = analysis.price_prediction.predicted_price;
-    const predictedPriceLower = analysis.price_prediction.confidence_interval.lower;
-    const predictedPriceUpper = analysis.price_prediction.confidence_interval.upper;
+    const predictedPriceLower95 = analysis.price_prediction.confidence_interval.lower;
+    const predictedPriceUpper95 = analysis.price_prediction.confidence_interval.upper;
     const strike = analysis.option.strike;
     const optionType = analysis.option.type;
     const premium = parseFloat(formData.premium);
     const directionProb = analysis.price_prediction.direction_probability;
+    
+    // Calculate 65% confidence interval (tighter for recommendation)
+    // 65% CI ≈ predicted ± 0.48 * (95% range / 2)
+    const range95 = (predictedPriceUpper95 - predictedPriceLower95) / 2;
+    const range65 = range95 * 0.48; // 65% CI is ~48% of 95% CI range
+    const predictedPriceLower65 = predictedPrice - range65;
+    const predictedPriceUpper65 = predictedPrice + range65;
     
     // Calculate break-even price
     let breakEvenPrice = 0;
@@ -202,13 +216,28 @@ const OptionsAnalyzer = () => {
       exceedsBreakEven = predictedPrice < breakEvenPrice;
     }
     
-    // Recommendation based on expected profit, probability, and break-even
-    if (exceedsBreakEven && profitLossPercent > 50 && directionProb > 0.6) {
+    // Check if break-even is within the 65% confidence interval (for recommendation)
+    let breakEvenInRange = false;
+    if (optionType === 'call') {
+      breakEvenInRange = breakEvenPrice >= predictedPriceLower65 && breakEvenPrice <= predictedPriceUpper65;
+    } else {
+      breakEvenInRange = breakEvenPrice <= predictedPriceUpper65 && breakEvenPrice >= predictedPriceLower65;
+    }
+    
+    // Recommendation based on predicted price vs break-even
+    // STRONG BUY: Predicted price exceeds break-even AND high profit potential
+    if (exceedsBreakEven && profitLossPercent > 15 && directionProb > 0.6) {
       return { text: 'STRONG BUY', color: 'bg-green-600', profitLoss: profitLossPercent, breakEven: breakEvenPrice, exceedsBreakEven };
     }
-    if (exceedsBreakEven && profitLossPercent > 20 && directionProb > 0.55) {
+    // BUY: Predicted price exceeds break-even (any positive expected profit)
+    if (exceedsBreakEven && profitLossPercent > 0) {
       return { text: 'BUY', color: 'bg-green-500', profitLoss: profitLossPercent, breakEven: breakEvenPrice, exceedsBreakEven };
     }
+    // NEUTRAL: Break-even is within confidence interval AND predicted doesn't clearly exceed break-even
+    if (breakEvenInRange && !exceedsBreakEven) {
+      return { text: 'NEUTRAL', color: 'bg-gray-500', profitLoss: profitLossPercent, breakEven: breakEvenPrice, exceedsBreakEven };
+    }
+    // AVOID: Predicted price does NOT exceed break-even
     if (!exceedsBreakEven || profitLossPercent < -50 || directionProb < 0.4) {
       return { text: 'AVOID', color: 'bg-red-600', profitLoss: profitLossPercent, breakEven: breakEvenPrice, exceedsBreakEven };
     }
@@ -241,18 +270,18 @@ const OptionsAnalyzer = () => {
               <LineChart size={20} className="text-red-600" />
               Option Details
             </h2>
-            <Tooltip text="An option is a contract giving you the right (but not obligation) to buy (call) or sell (put) a stock at a specific price (strike) by a certain date (expiration). You pay a premium upfront for this right. Options are leveraged instruments that can amplify both gains and losses." />
+            <Tooltip position="left" text="An option is a contract giving you the right (but not obligation) to buy (call) or sell (put) a stock at a specific price (strike) by a certain date (expiration). You pay a premium upfront for this right. Options are leveraged instruments that can amplify both gains and losses." />
           </div>
           <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
             <div>
               <label className="block text-sm font-semibold text-gray-700 mb-1 flex items-center gap-1">
                 Ticker
-                <Tooltip position="left" text="The stock symbol (e.g., AAPL for Apple, TSLA for Tesla). This is the underlying asset the option contract is based on." />
+                <Tooltip text="The stock symbol (e.g., AAPL for Apple, TSLA for Tesla). This is the underlying asset the option contract is based on." />
               </label>
               <input
                 type="text"
                 value={formData.ticker}
-                onChange={(e) => setFormData({...formData, ticker: e.target.value.toUpperCase()})}
+                onChange={(e) => handleInputChange('ticker', e.target.value.toUpperCase())}
                 className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
                 placeholder="AAPL"
               />
@@ -265,7 +294,7 @@ const OptionsAnalyzer = () => {
               <input
                 type="number"
                 value={formData.strike}
-                onChange={(e) => setFormData({...formData, strike: e.target.value})}
+                onChange={(e) => handleInputChange('strike', e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-red-500"
                 placeholder="270"
               />
@@ -279,7 +308,7 @@ const OptionsAnalyzer = () => {
                 type="number"
                 step="0.01"
                 value={formData.premium}
-                onChange={(e) => setFormData({...formData, premium: e.target.value})}
+                onChange={(e) => handleInputChange('premium', e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-red-500"
                 placeholder="5.50"
               />
@@ -291,7 +320,7 @@ const OptionsAnalyzer = () => {
               </label>
               <select
                 value={formData.optionType}
-                onChange={(e) => setFormData({...formData, optionType: e.target.value})}
+                onChange={(e) => handleInputChange('optionType', e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-red-500"
               >
                 <option value="call">Call</option>
@@ -306,7 +335,7 @@ const OptionsAnalyzer = () => {
               <input
                 type="date"
                 value={formData.expiration}
-                onChange={(e) => setFormData({...formData, expiration: e.target.value})}
+                onChange={(e) => handleInputChange('expiration', e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-red-500"
               />
             </div>
